@@ -17,7 +17,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
 SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
+TEST_GUILD_ID = os.getenv("TEST_GUILD_ID")
 # Resolver cookies.txt soportando rutas relativas a la raíz o absolutas
 _cookies_env = os.getenv("YOUTUBE_COOKIES_PATH", "cookies.txt")
 _raw_cookies_path = Path(_cookies_env).expanduser()

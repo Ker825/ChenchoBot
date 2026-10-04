@@ -12,6 +12,7 @@ dependencies = [
     "rich>=15.0.0",
     "spotipy>=2.26.0",
     "yt-dlp>=2026.8.19",
+    "ytmusicapi>=1.12.3",
 ]
 
 [build-system]
@@ -31,3 +32,13 @@ ignore_missing_imports = false
 [[tool.mypy.overrides]]
 module = "spotipy.*"
 ignore_missing_imports = true
+
+[tool.ruff]
+# Allow lines to be as long as 120.
+line-length = 120
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
+]

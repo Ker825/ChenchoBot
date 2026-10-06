@@ -8,24 +8,25 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
-from chencho_bot.config.settings import DISCORD_TOKEN, TEST_GUILD_ID
-from chencho_bot.music.player import MusicPlayer
+from chencho_bot.config.settings import ConfigurationError, get_settings
 from chencho_bot.utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
 console = Console()
 
+# Extensiones activas: se retira 'leave' al estar integrado en 'music'
 EXTENSIONS_TO_LOAD: tuple[str, ...] = (
     "chencho_bot.commands.ping",
     "chencho_bot.commands.music",
     "chencho_bot.commands.search",
     "chencho_bot.commands.join",
     "chencho_bot.commands.leave",
+    "chencho_bot.commands.playlist",
 )
 
 
 class ChenchoBot(commands.Bot):
-    """Cliente principal del bot con gestion centralizada de reproductores."""
+    """Cliente central de Discord con inicialización controlada."""
 
     def __init__(self, test_guild_id: int | None = None) -> None:
         intents = discord.Intents.default()
@@ -36,20 +37,9 @@ class ChenchoBot(commands.Bot):
             intents=intents,
         )
         self.test_guild_id: int | None = test_guild_id
-        self.players: dict[int, MusicPlayer] = {}
-
-    def get_player(self, guild_id: int) -> MusicPlayer:
-        """Obtiene o inicializa el reproductor musical para un servidor."""
-        if guild_id not in self.players:
-            self.players[guild_id] = MusicPlayer(bot=self)
-        return self.players[guild_id]
-
-    def remove_player(self, guild_id: int) -> MusicPlayer | None:
-        """Elimina el reproductor del registro para evitar fugas de memoria."""
-        return self.players.pop(guild_id, None)
 
     async def setup_hook(self) -> None:
-        """Carga de extensiones modulares y sincronizacion selectiva de comandos."""
+        """Carga las extensiones modulares y sincroniza el árbol de comandos."""
         table = Table(
             title="Carga de Extensiones",
             show_header=True,
@@ -68,7 +58,7 @@ class ChenchoBot(commands.Bot):
                     "Cargada correctamente",
                 )
             except Exception as error:
-                logger.exception("Error al cargar la extension: %s", extension)
+                logger.exception("Error al cargar la extensión: %s", extension)
                 table.add_row(
                     extension,
                     "[bold red]FAIL[/bold red]",
@@ -77,7 +67,7 @@ class ChenchoBot(commands.Bot):
 
         console.print(table)
 
-        # Sincronizacion restringida al servidor de desarrollo si esta configurado
+        # Sincronización restringida al servidor de pruebas si está definido
         if self.test_guild_id:
             guild_obj = discord.Object(id=self.test_guild_id)
             self.tree.copy_global_to(guild=guild_obj)
@@ -94,9 +84,9 @@ class ChenchoBot(commands.Bot):
             )
 
 
-def build_bot() -> ChenchoBot:
-    """Fabrica para instanciar el cliente con sus listeners y configuracion."""
-    bot = ChenchoBot(test_guild_id=TEST_GUILD_ID)
+def build_bot(test_guild_id: int | None) -> ChenchoBot:
+    """Fábrica para instanciar el bot y registrar listeners de ciclo de vida del servidor."""
+    bot = ChenchoBot(test_guild_id=test_guild_id)
 
     @bot.event
     async def on_ready() -> None:
@@ -115,33 +105,53 @@ def build_bot() -> ChenchoBot:
 
     @bot.event
     async def on_guild_remove(guild: discord.Guild) -> None:
-        """Limpia el estado y los recursos si el bot es expulsado de un servidor."""
-        player = bot.remove_player(guild.id)
-        if player:
+        """Limpia el estado del reproductor si el bot es expulsado de un servidor."""
+        music_cog = bot.get_cog("Music")
+        if music_cog and hasattr(music_cog, "players") and guild.id in music_cog.players:
+            player = music_cog.players[guild.id]
             await player.disconnect()
+            music_cog.remove_player(guild.id)
             logger.info(
-                "Recursos liberados del servidor: %s (%s)", guild.name, guild.id
+                "Recursos liberados del servidor expulsado: %s (%s)",
+                guild.name,
+                guild.id,
             )
 
     return bot
 
 
 def main() -> None:
-    """Punto de entrada principal para el inicio de la aplicacion."""
+    """Punto de entrada: valida la configuración y arranca el servicio."""
     setup_logging()
+    settings = get_settings()
 
-    if not DISCORD_TOKEN:
+    # 1. Validación explícita de entorno antes de conectarse a Discord
+    try:
+        settings.validate_production()
+    except (ConfigurationError, FileNotFoundError) as error:
         console.print(
             Panel(
-                "[bold red]DISCORD_TOKEN no encontrado en el entorno.[/bold red]",
-                title="Error Critico",
+                f"[bold red]{error}[/bold red]",
+                title="Error de Configuración",
                 border_style="red",
             )
         )
         sys.exit(1)
 
-    bot = build_bot()
-    bot.run(DISCORD_TOKEN)
+    # 2. Conversión segura del ID del servidor de desarrollo
+    parsed_guild_id: int | None = None
+    if settings.test_guild_id and settings.test_guild_id.strip():
+        try:
+            parsed_guild_id = int(settings.test_guild_id)
+        except ValueError:
+            logger.warning(
+                "TEST_GUILD_ID no es un número válido: %r. Se sincronizará globalmente.",
+                settings.test_guild_id,
+            )
+
+    # 3. Inicialización y ejecución
+    bot = build_bot(test_guild_id=parsed_guild_id)
+    bot.run(settings.discord_token)
 
 
 if __name__ == "__main__":

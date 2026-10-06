@@ -84,6 +84,20 @@ class MusicQueue:
         self._queue = deque(track_list)
         return True
 
+    def move_current(self, track: Track, to_index: int) -> bool:
+        """Reubica la pista activa en la cola de espera y la remueve del historial."""
+        # 1. Limite valido: puede insertarse desde 0 hasta el final de la cola (len)
+        if not (0 <= to_index <= len(self._queue)):
+            return False
+
+        # 2. Retirar del historial para evitar duplicados en previous()
+        if self._history and self._history[-1] is track:
+            self._history.pop()
+
+        # 3. Insertar en la posicion solicitada
+        self._queue.insert(to_index, track)
+        return True
+
     def insert(self, index: int, track: Track) -> bool:
         """Inserta una pista en una posicion arbitraria de la cola (0-indexed)."""
 

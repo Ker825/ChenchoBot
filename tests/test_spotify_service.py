@@ -1,6 +1,15 @@
 from chencho_bot.services.spotify import _format_track, extract_spotify_resource
 
 
+def test_spotify_service_does_not_initialize_on_import() -> None:
+    import chencho_bot.services.spotify as sp_mod
+
+    # Comprueba que el servicio no haya instanciado el cliente antes de ser invocado
+    assert sp_mod._default_service is None
+    service = sp_mod.SpotifyService()
+    assert service._client is None
+
+
 def test_extract_spotify_resource_variants():
     """Verifica la extraccion de IDs en URLs estandar, regionales y URIs."""
     # Track estandar con parametros de tracking

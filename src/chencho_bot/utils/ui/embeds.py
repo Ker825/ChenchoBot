@@ -133,12 +133,15 @@ def build_queue_page_embed(
 ) -> discord.Embed:
     """Construye el embed paginado de la lista de reproduccion."""
     total_tracks = len(tracks)
+
     safe_per_page = max(1, per_page)
     total_pages = max(1, math.ceil(total_tracks / safe_per_page))
+
     page = max(1, min(current_page, total_pages))
 
     start_idx = (page - 1) * safe_per_page
     end_idx = start_idx + safe_per_page
+
     page_tracks = tracks[start_idx:end_idx]
 
     embed = discord.Embed(
@@ -151,12 +154,17 @@ def build_queue_page_embed(
         return embed
 
     lines = [
-        f"`{idx}.` **{t.title}** - {t.artist} `[{format_time(t.duration_ms)}]`"
-        for idx, t in enumerate(page_tracks, start=start_idx + 1)
+        f"`{idx}.` **{track.title}** - {track.artist} `[{format_time(track.duration_ms)}]`"
+        for idx, track in enumerate(
+            page_tracks,
+            start=start_idx + 1,
+        )
     ]
 
-    total_duration_ms = sum(t.duration_ms for t in tracks if t.duration_ms > 0)
+    total_duration_ms = sum(track.duration_ms for track in tracks if track.duration_ms > 0)
+
     embed.description = "\n".join(lines)
+
     embed.set_footer(
         text=(
             f"Pagina {page}/{total_pages} | "
@@ -164,6 +172,7 @@ def build_queue_page_embed(
             f"Duracion estimada: {format_time(total_duration_ms)}"
         )
     )
+
     return embed
 
 
@@ -177,3 +186,20 @@ def build_status_embed(
         description=message,
         color=color,
     )
+
+
+def build_lists_embed(
+    guild_name: str,
+    lines: list[str],
+    total_lists: int,
+) -> discord.Embed:
+    """Construye el embed con las listas de reproduccion del usuario."""
+    embed = discord.Embed(
+        title=f"Tus Listas - {guild_name}",
+        description="\n".join(lines),
+        color=COLOR_PRIMARY,
+    )
+
+    embed.set_footer(text=f"Total: {total_lists} listas registradas")
+
+    return embed

@@ -4,14 +4,21 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from chencho_bot.database.repositories.stats_repository import TrackStatsRepository
+from chencho_bot.database.session import async_session_factory
+from chencho_bot.music.events import CompositePlayerListener
 from chencho_bot.music.player import MusicPlayer
+from chencho_bot.services.guild_config import GuildConfigService
+from chencho_bot.services.playback_tracker import PlaybackTracker
 from chencho_bot.services.resolver import TrackResolver
-from chencho_bot.utils.guards import VoiceGuard
+from chencho_bot.utils.guards import DJGuard
+from chencho_bot.utils.logger import setup_logging
 from chencho_bot.utils.ui.discord_handler import DiscordUIHandler
 from chencho_bot.utils.ui.embeds import build_added_track_embed, build_queue_page_embed, build_status_embed
 from chencho_bot.utils.ui.queue_view import QueuePaginationView
 
 logger = logging.getLogger(__name__)
+setup_logging()
 
 
 class Music(commands.Cog):
@@ -20,32 +27,39 @@ class Music(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.resolver = TrackResolver()
+        self.config_service = GuildConfigService()
         self.ui_handlers: dict[int, DiscordUIHandler] = {}
         self.players: dict[int, MusicPlayer] = {}
+
+    async def _apply_guild_config(self, player: MusicPlayer, guild_id: int) -> None:
+        """Carga y aplica los ajustes persistidos de la base de datos al reproductor."""
+        config = await self.config_service.get_config(guild_id)
+        player.volume = config.default_volume
+        player.autoplay = config.autoplay_enabled
+        player.set_inactivity_timeout(config.inactivity_timeout_seconds)
 
     def get_player(
         self,
         guild_id: int,
         channel: discord.abc.Messageable | None = None,
     ) -> MusicPlayer:
-        """Obtiene o instancia el MusicPlayer vinculandolo a su DiscordUIHandler."""
+        """Obtiene o instancia el MusicPlayer vinculandolo a su CompositePlayerListener."""
         if guild_id not in self.players:
             player = MusicPlayer(self.bot)
 
-            # Si se proporciona el canal de texto, se enlaza el adaptador de UI
+            # 1. Configurar dispatcher compuesto con el tracker de BD obligatorio
+            composite = CompositePlayerListener([PlaybackTracker(guild_id)])
+            player.listener = composite
+
+            # 2. Si hay canal de texto disponible, acoplar el adaptador de interfaz
             if channel:
                 ui_handler = DiscordUIHandler(text_channel=channel, player=player)
-                player.listener = ui_handler
+                composite.add_listener(ui_handler)
                 self.ui_handlers[guild_id] = ui_handler
 
             self.players[guild_id] = player
 
         return self.players[guild_id]
-
-    def remove_player(self, guild_id: int) -> None:
-        """Remueve las instancias de dominio y presentacion para liberar memoria."""
-        self.players.pop(guild_id, None)
-        self.ui_handlers.pop(guild_id, None)
 
     def _ensure_ui_handler(
         self,
@@ -53,11 +67,45 @@ class Music(commands.Cog):
         channel: discord.abc.Messageable,
         player: MusicPlayer,
     ) -> DiscordUIHandler:
-        """Garantiza la existencia y canal actualizado del adaptador de UI."""
+        """Garantiza la existencia del adaptador de UI sin romper el CompositeListener."""
         if guild_id not in self.ui_handlers:
             handler = DiscordUIHandler(text_channel=channel, player=player)
             self.ui_handlers[guild_id] = handler
-            player.listener = handler
+
+            # Anexar al composite existente sin pisar otros observadores
+            if isinstance(player.listener, CompositePlayerListener):
+                player.listener.add_listener(handler)
+            else:
+                player.listener = handler
+        else:
+            handler = self.ui_handlers[guild_id]
+            handler.text_channel = channel
+
+        return handler
+
+    def remove_player(self, guild_id: int) -> MusicPlayer | None:
+        """Remueve las instancias de dominio y presentación para liberar memoria."""
+        player = self.players.pop(guild_id, None)
+        self.ui_handlers.pop(guild_id, None)
+
+        return player
+
+    def _ensure_ui_handler(
+        self,
+        guild_id: int,
+        channel: discord.abc.Messageable,
+        player: MusicPlayer,
+    ) -> DiscordUIHandler:
+        """Garantiza la existencia del adaptador de UI sin romper el CompositeListener."""
+        if guild_id not in self.ui_handlers:
+            handler = DiscordUIHandler(text_channel=channel, player=player)
+            self.ui_handlers[guild_id] = handler
+
+            # Preservar el composite existente para no desconectar PlaybackTracker
+            if isinstance(player.listener, CompositePlayerListener):
+                player.listener.add_listener(handler)
+            else:
+                player.listener = handler
         else:
             handler = self.ui_handlers[guild_id]
             handler.text_channel = channel
@@ -82,6 +130,31 @@ class Music(commands.Cog):
             return None
 
     # ---------------------------------------------------------
+    # VOLUME (Control en caliente de sesion)
+    # ---------------------------------------------------------
+
+    @app_commands.command(name="volume", description="Ajusta el volumen de la reproduccion actual.")
+    @app_commands.describe(level="Nivel de volumen entre 1 y 150")
+    async def volume(
+        self,
+        interaction: discord.Interaction,
+        level: app_commands.Range[int, 1, 150],
+    ) -> None:
+        await interaction.response.defer()
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
+
+        assert interaction.guild is not None
+        player = self.get_player(interaction.guild.id)
+
+        new_volume = player.set_volume(level)
+        embed = build_status_embed(
+            message=f"Volumen ajustado al **{new_volume}%**.",
+            success=True,
+        )
+        await interaction.followup.send(embed=embed)
+
+    # ---------------------------------------------------------
     # PLAY
     # ---------------------------------------------------------
 
@@ -101,10 +174,14 @@ class Music(commands.Cog):
             await interaction.followup.send("No se encontraron canciones.", ephemeral=True)
             return
 
+        is_new_player = interaction.guild.id not in self.players
         player = self.get_player(interaction.guild.id)
         player.voice_client = voice_client
 
         # Conectar el adaptador de interfaz con el canal actual
+        if is_new_player:
+            await self._apply_guild_config(player, interaction.guild.id)
+
         self._ensure_ui_handler(
             guild_id=interaction.guild.id,
             channel=interaction.channel,
@@ -135,7 +212,7 @@ class Music(commands.Cog):
     )
     async def autoplay(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -150,6 +227,34 @@ class Music(commands.Cog):
         await interaction.followup.send(embed=embed)
 
     # ---------------------------------------------------------
+    # TOP
+    # ---------------------------------------------------------
+
+    @app_commands.command(name="top", description="Muestra las canciones mas reproducidas en este servidor.")
+    async def stats_top(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer()
+        if not interaction.guild:
+            return
+
+        async with async_session_factory() as session:
+            repo = TrackStatsRepository(session)
+            top_tracks = await repo.get_top_tracks(interaction.guild.id, limit=10)
+
+        if not top_tracks:
+            await interaction.followup.send("Aun no hay reproducciones registradas.")
+            return
+
+        lines = [
+            f"`{idx}.` **{t.title}** - {t.artist} (`{t.play_count}` veces)" for idx, t in enumerate(top_tracks, start=1)
+        ]
+        embed = discord.Embed(
+            title=f"Top 10 Canciones - {interaction.guild.name}",
+            description="\n".join(lines),
+            color=0x1DB954,
+        )
+        await interaction.followup.send(embed=embed)
+
+    # ---------------------------------------------------------
     # SKIP
     # ---------------------------------------------------------
 
@@ -159,6 +264,8 @@ class Music(commands.Cog):
     )
     async def skip(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
 
         if interaction.guild is None:
             await interaction.followup.send(
@@ -183,6 +290,8 @@ class Music(commands.Cog):
     @app_commands.command(name="pause", description="Pausa la cancion actual")
     async def pause(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
 
         if interaction.guild is None:
             await interaction.followup.send("Comando solo disponible en servidores.", ephemeral=True)
@@ -204,6 +313,8 @@ class Music(commands.Cog):
     @app_commands.command(name="resume", description="Reanuda la cancion pausada")
     async def resume(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
 
         if interaction.guild is None:
             await interaction.followup.send("Comando solo disponible en servidores.", ephemeral=True)
@@ -230,7 +341,7 @@ class Music(commands.Cog):
         await interaction.response.defer()
 
         # 1. Validar presencia en canal de voz
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -287,8 +398,11 @@ class Music(commands.Cog):
             )
             return
 
+        view = QueuePaginationView(
+            queue=player.queue,
+            requester=interaction.user,
+        )
         embed = build_queue_page_embed(queue_tracks, current_page=1, per_page=10)
-        view = QueuePaginationView(tracks=queue_tracks, per_page=10)
 
         # Si solo hay una pagina, enviamos solo el embed sin botones innecesarios
         if view.total_pages <= 1:
@@ -302,7 +416,7 @@ class Music(commands.Cog):
     )
     async def queue_shuffle(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -335,7 +449,7 @@ class Music(commands.Cog):
         position: app_commands.Range[int, 1],
     ) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -371,7 +485,7 @@ class Music(commands.Cog):
         to_position: app_commands.Range[int, 1],
     ) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -408,6 +522,9 @@ class Music(commands.Cog):
     ) -> None:
         await interaction.response.defer(ephemeral=True)
 
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
+
         if interaction.guild is None:
             await interaction.followup.send(
                 "Comando solo disponible en servidores.",
@@ -435,7 +552,7 @@ class Music(commands.Cog):
     )
     async def queue_clear(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -466,6 +583,8 @@ class Music(commands.Cog):
     @app_commands.command(name="previous", description="Reproduce la cancion anterior")
     async def previous(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
+        if not await DJGuard.can_control(interaction, self.config_service):
+            return
 
         if interaction.guild is None:
             await interaction.followup.send("Comando solo disponible en servidores.", ephemeral=True)
@@ -485,7 +604,7 @@ class Music(commands.Cog):
     @app_commands.command(name="loop", description="Alterna la repeticion de la pista actual.")
     async def loop(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer()
-        if not await VoiceGuard.ensure_same_channel(interaction):
+        if not await DJGuard.can_control(interaction, self.config_service):
             return
 
         assert interaction.guild is not None
@@ -550,6 +669,15 @@ class Music(commands.Cog):
                     bot_channel.name,
                 )
                 player.cancel_empty_channel_timeout()
+
+    @commands.Cog.listener()
+    async def on_guild_remove(self, guild: discord.Guild) -> None:
+        """Desconecta y elimina el reproductor cuando el bot sale de un servidor."""
+        player = self.players.get(guild.id)
+
+        if player is not None:
+            await player.disconnect()
+            self.remove_player(guild.id)
 
 
 async def setup(bot: commands.Bot) -> None:

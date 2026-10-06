@@ -1,9 +1,18 @@
-# 🎵 ChenchoBot
+# ChenchoBot
 
-Bot musical para Discord desarrollado en Python con `discord.py`.
+Bot modular de música para Discord desarrollado en Python bajo principios de Clean Architecture y diseño desacoplado de dependencias.
 
-ChenchoBot está diseñado para reproducir música en canales de voz, utilizando información de Spotify para identificar las canciones y gestionar la reproducción mediante una cola.
+---
 
+## Características Principales
+
+- **Resolución Multiplataforma**: Integración híbrida con YouTube Music (`ytmusicapi`) y Spotify (`spotipy`) mediante `TrackResolver`.
+- **Autoplay Inteligente**: Generación de colas continuas de radio basadas en la última pista reproducida vía YouTube Music.
+- **Gestión Avanzada de Cola**: Navegación bidireccional (`/previous`, `/play_now`, `/queue move`) con historial circular acotado.
+- **Ciclo de Vida Resiliente**: Watchdogs automáticos por inactividad y desconexión controlada por canal vacío con temporizador de gracia.
+- **UI Reactiva**: Tarjetas estandarizadas con `discord.Embed` y vistas paginadas interactivas.
+
+---
 ## ✨ Características
 
 Actualmente ChenchoBot cuenta con:
@@ -21,6 +30,15 @@ Actualmente ChenchoBot cuenta con:
 * 📜 Cola de reproducción
 * 🎧 Gestión independiente del reproductor por servidor
 * 🎤 Conexión automática a canales de voz
+
+## Requisitos del Sistema
+
+- **Python**: 3.12 o superior
+- **Gestor de Entorno**: [uv](https://astral.sh/uv/)
+- **FFmpeg**: Instalado en el sistema operativo y disponible en el `PATH`
+- **Archivo Netscape Cookies**: Requerido para resolver streams de audio sin bloqueos
+
+---
 
 ## 🛠️ Tecnologías
 
@@ -146,17 +164,21 @@ El comando exacto puede cambiar conforme avance la estructura del proyecto.
 
 ## 🎮 Comandos
 
-| Comando     | Descripción                              |
-| ----------- | ---------------------------------------- |
-| `/ping`     | Comprueba que el bot está funcionando    |
-| `/play`     | Reproduce o añade una canción a la cola  |
-| `/pause`    | Pausa la reproducción                    |
-| `/resume`   | Reanuda la reproducción                  |
-| `/skip`     | Salta la canción actual                  |
-| `/previous` | Reproduce la canción anterior            |
-| `/loop`     | Activa o desactiva la repetición         |
-| `/stop`     | Detiene la reproducción y limpia la cola |
-| `/queue`    | Muestra la cola actual                   |
+| Comando           | Descripción                                               |
+| ----------------- | --------------------------------------------------------- |
+| `/ping`           | Comprueba que el bot está funcionando                     |
+| `/play`           | Reproduce o añade una canción a la cola                   |
+| `/pause`          | Pausa la reproducción                                     |
+| `/resume`         | Reanuda la reproducción                                   |
+| `/skip`           | Salta la canción actual                                   |
+| `/previous`       | Reproduce la canción anterior                             |
+| `/loop`           | Activa o desactiva la repetición                          |
+| `/stop`           | Detiene la reproducción y limpia la cola                  |
+| `/queue show`     | Despliega la cola actual con paginación interactiva.      |
+| `/queue shuffle`  | Mezcla aleatoriamente las canciones pendientes.           |
+| `/queue clear`    | Vacía todas las canciones en espera.                      |
+| `/queue remove `  | Elimina una pista específica por su índice (1-based).     |
+| `/queue play_now` | Salta inmediatamente a la canción indicada y la reproduce.|
 
 ## 🚧 Estado del proyecto
 
